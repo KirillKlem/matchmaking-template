@@ -3,6 +3,7 @@ from flask import Flask, request, jsonify, current_app
 import json
 import os
 from collections import defaultdict
+import random
 
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
@@ -48,6 +49,66 @@ def log_match():
     logger.info(data)
     return jsonify({"epoch": new_epoch, "test_name": test_name}), 200
 
+def calculate_team_metrics(team):
+    mmr_sum = sum(player['mmr'] for player in team)
+    if team:
+        mmr_avg = mmr_sum / len(team)
+        mmr_diff = max(player['mmr'] for player in team) - min(player['mmr'] for player in team)
+    else:
+        mmr_avg = 0
+        mmr_diff = 10**6
+    return mmr_avg, mmr_diff
+
+def add_player_to_team(team, player, role):
+    team.append({**player, "current_role": role})
+    return calculate_team_metrics(team)
+
+def find_best_team_assignment(role_buckets, used_players, role, red_team, blue_team):
+    first_player = next((player for player in role_buckets[role] if player["id"] not in used_players), None)
+    second_player = next((player for player in role_buckets[role] if player["id"] not in used_players and player['id'] != first_player['id']), None)
+    if not first_player and not second_player:
+        return None
+
+    best_choice = None
+
+    red_team_with_first = red_team.copy()
+    blue_team_with_second = blue_team.copy()
+
+    if first_player and second_player:
+        both_players_flag = True 
+
+        red_avg1, red_diff1 = add_player_to_team(red_team_with_first, first_player, role)
+        blue_avg1, blue_diff1 = add_player_to_team(blue_team_with_second, second_player, role)
+
+        red_team_with_second = red_team.copy()
+        blue_team_with_first = blue_team.copy()
+        red_avg2, red_diff2 = add_player_to_team(red_team_with_second, second_player, role)
+        blue_avg2, blue_diff2 = add_player_to_team(blue_team_with_first, first_player, role)
+
+        metric_diff1 = abs(red_avg1 - blue_avg1) + red_diff1 + blue_diff1
+        metric_diff2 = abs(red_avg2 - blue_avg2) + red_diff2 + blue_diff2
+
+    else:
+        both_players_flag = False 
+
+        red_avg1, red_diff1 = add_player_to_team(red_team_with_first, first_player, role)
+        blue_avg1, blue_diff1 = calculate_team_metrics(blue_team)
+
+        blue_team_with_first = blue_team.copy()
+        red_avg2, red_diff2 = calculate_team_metrics(red_team)
+        blue_avg2, blue_diff2 = add_player_to_team(blue_team_with_first, first_player, role)
+
+        metric_diff1 = abs(red_avg1 - blue_avg1) + red_diff1 + blue_diff1
+        metric_diff2 = abs(red_avg2 - blue_avg2) + red_diff2 + blue_diff2
+
+    if metric_diff1 <= metric_diff2:
+        best_choice = (first_player, second_player, 'red_first', both_players_flag)
+
+    else:
+        best_choice = (first_player, second_player, 'blue_first', both_players_flag)
+
+    return best_choice
+
 def create_match(waiting_users):
     # Сортируем игроков по времени ожидания (от большего к меньшему)
     waiting_users.sort(key=lambda user: user["waitingTime"], reverse=True)
@@ -56,54 +117,34 @@ def create_match(waiting_users):
         for role in user["roles"]:
             role_buckets[role].append(user)
 
-    teams = {"red": [], "blue": []}
+    red_team = []
+    blue_team = []
     used_players = set()
-    red_team_mmr = 0
-    blue_team_mmr = 0
 
-    for role in ["top", "mid", "bot", "sup", "jungle"]:
-        first_player = next((player for player in role_buckets[role] if player["id"] not in used_players), None)
-        second_player = next((player for player in role_buckets[role] if player["id"] not in used_players and player != first_player), None)
+    roles = ["top", "mid", "bot", "sup", "jungle"]
+    random.shuffle(roles)
+    for role in roles:
+        choice = find_best_team_assignment(role_buckets, used_players, role, red_team, blue_team)
+        
+        if not choice:
+            continue
+        
+        first_player, second_player, assignment, both_players_flag = choice
 
-        if first_player and second_player:
-            if red_team_mmr <= blue_team_mmr:
-                teams["red"].append({**first_player, "current_role": role})
-                used_players.add(first_player["id"])
-                red_team_mmr += first_player["mmr"]
+        if assignment == 'red_first':
+            red_team.append({**first_player, "current_role": role})
+            if both_players_flag:
+                blue_team.append({**second_player, "current_role": role})
+        else:
+            blue_team.append({**first_player, "current_role": role})
+            if both_players_flag:
+                red_team.append({**second_player, "current_role": role})
 
-                teams["blue"].append({**second_player, "current_role": role})
-                used_players.add(second_player["id"])
-                blue_team_mmr += second_player["mmr"]
-            else:
-                teams["blue"].append({**first_player, "current_role": role})
-                used_players.add(first_player["id"])
-                blue_team_mmr += first_player["mmr"]
+        used_players.add(first_player['id'])
+        if both_players_flag:
+            used_players.add(second_player['id'])
 
-                teams["red"].append({**second_player, "current_role": role})
-                used_players.add(second_player["id"])
-                red_team_mmr += second_player["mmr"]
-
-        elif first_player:
-            if red_team_mmr <= blue_team_mmr:
-                teams["red"].append({**first_player, "current_role": role})
-                used_players.add(first_player["id"])
-                red_team_mmr += first_player["mmr"]
-            else:
-                teams["blue"].append({**first_player, "current_role": role})
-                used_players.add(first_player["id"])
-                blue_team_mmr += first_player["mmr"]
-
-        elif second_player:
-            if red_team_mmr <= blue_team_mmr:
-                teams["red"].append({**second_player, "current_role": role})
-                used_players.add(second_player["id"])
-                red_team_mmr += second_player["mmr"]
-            else:
-                teams["blue"].append({**second_player, "current_role": role})
-                used_players.add(second_player["id"])
-                blue_team_mmr += second_player["mmr"]
-
-    return teams
+    return {"red": red_team, "blue": blue_team}
 
 @app.route('/matchmaking/create_match', methods=['POST'])
 def create_match_endpoint():
@@ -114,7 +155,8 @@ def create_match_endpoint():
 
     if not test_name or not epoch or not waiting_users:
         return jsonify({"error": "Missing parameters"}), 400
-
+    
+    print(waiting_users)
     match = create_match(waiting_users)
     match_result = {
         "test_name": test_name,
@@ -130,7 +172,7 @@ def create_match_endpoint():
             }
         ]
     }
-
+    print(match_result)
     return jsonify(match_result), 200
 
 if __name__ == '__main__':
