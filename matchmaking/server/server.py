@@ -51,26 +51,57 @@ def log_match():
 def create_match(waiting_users):
     # Сортируем игроков по времени ожидания (от большего к меньшему)
     waiting_users.sort(key=lambda user: user["waitingTime"], reverse=True)
-    
-    # Разделяем игроков по ролям для удобства подбора
     role_buckets = defaultdict(list)
     for user in waiting_users:
         for role in user["roles"]:
             role_buckets[role].append(user)
-    
+
     teams = {"red": [], "blue": []}
     used_players = set()
-    
+    red_team_mmr = 0
+    blue_team_mmr = 0
+
     for role in ["top", "mid", "bot", "sup", "jungle"]:
-        red_player = next((player for player in role_buckets[role] if player["id"] not in used_players), None)
-        if red_player:
-            teams["red"].append({**red_player, "current_role": role})
-            used_players.add(red_player["id"])
-        
-        blue_player = next((player for player in role_buckets[role] if player["id"] not in used_players), None)
-        if blue_player:
-            teams["blue"].append({**blue_player, "current_role": role})
-            used_players.add(blue_player["id"])
+        first_player = next((player for player in role_buckets[role] if player["id"] not in used_players), None)
+        second_player = next((player for player in role_buckets[role] if player["id"] not in used_players and player != first_player), None)
+
+        if first_player and second_player:
+            if red_team_mmr <= blue_team_mmr:
+                teams["red"].append({**first_player, "current_role": role})
+                used_players.add(first_player["id"])
+                red_team_mmr += first_player["mmr"]
+
+                teams["blue"].append({**second_player, "current_role": role})
+                used_players.add(second_player["id"])
+                blue_team_mmr += second_player["mmr"]
+            else:
+                teams["blue"].append({**first_player, "current_role": role})
+                used_players.add(first_player["id"])
+                blue_team_mmr += first_player["mmr"]
+
+                teams["red"].append({**second_player, "current_role": role})
+                used_players.add(second_player["id"])
+                red_team_mmr += second_player["mmr"]
+
+        elif first_player:
+            if red_team_mmr <= blue_team_mmr:
+                teams["red"].append({**first_player, "current_role": role})
+                used_players.add(first_player["id"])
+                red_team_mmr += first_player["mmr"]
+            else:
+                teams["blue"].append({**first_player, "current_role": role})
+                used_players.add(first_player["id"])
+                blue_team_mmr += first_player["mmr"]
+
+        elif second_player:
+            if red_team_mmr <= blue_team_mmr:
+                teams["red"].append({**second_player, "current_role": role})
+                used_players.add(second_player["id"])
+                red_team_mmr += second_player["mmr"]
+            else:
+                teams["blue"].append({**second_player, "current_role": role})
+                used_players.add(second_player["id"])
+                blue_team_mmr += second_player["mmr"]
 
     return teams
 
